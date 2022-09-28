@@ -1,0 +1,686 @@
+---
+title: "A Machine Learner’s Market: Using Artificial Intelligence to Predict Home Prices"
+author: "Lee Waters"
+date: "5/9/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# define libraries
+library(caret)                                                                  # repeatedcv
+library(gbm)                                                                    # varimp
+library(reshape2)                                                               # melt correlation matrix
+library(ggplot2)                                                                # visualize correlation matrix
+library(car)                                                                    # vif
+library(Metrics)
+```
+
+# Step 0: Load data
+
+```{r}
+# load train and test sets
+training <- read.csv('train.csv')
+testing <- read.csv('test.csv')
+```
+
+# Step 1: Pre-processing
+
+Missing values (training)
+
+```{r}
+sapply(training, function(x) sum(is.na(x)))                                     # initial missing 
+
+# data imputation
+training$LotFrontage[is.na(training$LotFrontage)] <- 0                          # na is rly 0 sq ft 
+
+training$Alley[is.na(training$Alley)] <- 'None'                                 # na is rly none
+
+training <- training[-c(which(is.na(training$MasVnrType))), ]                   # remove 8 missing obs
+
+training$BsmtQual[is.na(training$BsmtQual)] <- 'None'                           # na is rly none
+training$BsmtCond[is.na(training$BsmtCond)] <- 'None'                           # na is rly none
+training$BsmtExposure[is.na(training$BsmtExposure)] <- 'None'                   # na is rly none
+training$BsmtFinType1[is.na(training$BsmtFinType1)] <- 'None'                   # na is rly none
+training$BsmtFinType2[is.na(training$BsmtFinType2)] <- 'None'                   # na is rly none
+
+training <- training[-c(which(is.na(training$Electrical))), ]                   # remove 1 missing obs
+
+training$FireplaceQu[is.na(training$FireplaceQu)] <- 'None'                     # na is rly none
+
+training$GarageType[is.na(training$GarageType)] <- 'None'                       # na is rly none
+training <- training[, -60]                                                     # remove GarageYrBlt to handle no garage case
+training$GarageFinish[is.na(training$GarageFinish)] <- 'None'                   # na is rly none
+training$GarageQual[is.na(training$GarageQual)] <- 'None'                       # na is rly none
+training$GarageCond[is.na(training$GarageCond)] <- 'None'                       # na is rly none
+
+training$PoolQC[is.na(training$PoolQC)] <- 'None'                               # na is rly none
+
+training$Fence[is.na(training$Fence)] <- 'None'                                 # na is rly none
+
+training$MiscFeature[is.na(training$MiscFeature)] <- 'None'                     # na is rly none
+
+# check for missing values
+sapply(training, function(x) sum(is.na(x)))                                     # final missing 
+```
+
+Missing values (testing)
+
+```{r}
+sapply(testing, function(x) sum(is.na(x)))                                      # initial missing 
+
+# data imputation
+temp = table(testing$MSZoning)                                                  # replace w most frequent
+names(temp[which.max(temp)])
+testing$MSZoning[is.na(testing$MSZoning)] <- 'RL' 
+rm(temp)
+
+testing$LotFrontage[is.na(testing$LotFrontage)] <- 0                            # na is rly 0 sq ft
+
+testing$Alley[is.na(testing$Alley)] <- 'None'                                   # na is rly none
+
+temp = table(testing$Utilities)                                                 # replace w most frequent
+names(temp[which.max(temp)])
+testing$Utilities[is.na(testing$Utilities)] <- 'AllPub' 
+rm(temp)
+
+testing$Exterior1st[is.na(testing$Exterior1st)] <- 'other  '                    # assume na is other
+testing$Exterior2nd[is.na(testing$Exterior2nd)] <- 'other  '                    # assume na is other
+
+testing$MasVnrType[is.na(testing$MasVnrType)] <- 'None'                         # assume na is none
+testing$MasVnrArea[is.na(testing$MasVnrArea)] <- 0                              # assume na is 0
+
+testing$BsmtQual[is.na(testing$BsmtQual)] <- 'None'                             # na is rly none
+testing$BsmtCond[is.na(testing$BsmtCond)] <- 'None'                             # na is rly none
+testing$BsmtExposure[is.na(testing$BsmtExposure)] <- 'None'                     # na is rly none
+testing$BsmtFinType1[is.na(testing$BsmtFinType1)] <- 'None'                     # na is rly none
+testing$BsmtFinType2[is.na(testing$BsmtFinType2)] <- 'None'                     # na is rly none
+testing$BsmtFinSF1[is.na(testing$BsmtFinSF1)] <- 0                              # assume na is 0
+testing$BsmtFinSF2[is.na(testing$BsmtFinSF2)] <- 0                              # assume na is 0
+testing$BsmtUnfSF[is.na(testing$BsmtUnfSF)] <- 0                                # assume na is 0
+testing$TotalBsmtSF[is.na(testing$TotalBsmtSF)] <- 0                            # assume na is 0
+testing$BsmtFullBath[is.na(testing$BsmtFullBath)] <- 0                          # assume na is 0
+testing$BsmtHalfBath[is.na(testing$BsmtHalfBath)] <- 0                          # assume na is 0
+
+testing$KitchenQual[is.na(testing$KitchenQual)] <- 'Fa'                         # looked at overall qual and cond
+
+testing$Functional[is.na(testing$Functional)] <- 'Maj2'                         # looked at overall qual and cond
+
+testing$FireplaceQu[is.na(testing$FireplaceQu)] <- 'None'                       # na is rly none
+
+testing$GarageType[is.na(testing$GarageType)] <- 'None'                         # na is rly none
+testing$GarageFinish[is.na(testing$GarageFinish)] <- 'None'                     # na is rly none
+testing$GarageQual[is.na(testing$GarageQual)] <- 'None'                         # na is rly none
+testing$GarageCond[is.na(testing$GarageCond)] <- 'None'                         # na is rly none
+testing$GarageCars[is.na(testing$GarageCars)] <- 0                              # assume na is 0
+testing$GarageArea[is.na(testing$GarageArea)] <- 0                              # assume na is 0
+testing <- testing[, -60]                                                       # remove GarageYrBlt to handle no garage case
+
+testing$PoolQC[is.na(testing$PoolQC)] <- 'None'                                 # na is rly none
+
+testing$Fence[is.na(testing$Fence)] <- 'None'                                   # na is rly none
+
+testing$MiscFeature[is.na(testing$MiscFeature)] <- 'None'                       # na is rly none
+
+testing$SaleType[is.na(testing$SaleType)] <- 'Oth'                              # assume na is other
+
+# check for missing values
+sapply(testing, function(x) sum(is.na(x)))                                      # final missing 
+```
+
+Prep variables (training)
+
+```{r}
+# combine train and test so all factor levels considered
+testing$SalePrice <- 0
+temp <- rbind(training, testing)
+
+str(temp)                                                                       # initial str
+
+temp$Id <- NULL                                                                 # remove id column
+
+temp$MSSubClass <- as.factor(temp$MSSubClass)
+
+cols_factor <- names(temp[, sapply(temp, class) == 'character'])                # convert chr to factor
+temp[cols_factor] <- lapply(temp[cols_factor], factor)
+rm(cols_factor)
+  
+temp$Street <- ordered(temp$Street,
+                           levels = c('Grvl', 'Pave'))                          # convert factor to ordinal
+
+temp$LotShape <- ordered(temp$LotShape,
+                             levels = c('IR3', 'IR2', 'IR1', 'Reg'))
+
+temp$LandContour <- ordered(temp$LandContour,
+                             levels = c('Low', 'HLS', 'Bnk', 'Lvl'))
+
+temp$Utilities <- ordered(temp$Utilities,
+                             levels = c('ELO', 'NoSeWa', 'NoSewr', 'AllPub'))
+
+temp$LandSlope <- ordered(temp$LandSlope,
+                             levels = c('Sev', 'Mod', "Gtl"))
+
+temp$OverallQual <- ordered(temp$OverallQual)
+
+temp$OverallCond <- ordered(temp$OverallCond)
+
+temp$ExterQual <- ordered(temp$ExterQual,
+                             levels = c('Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+temp$ExterCond <- ordered(temp$ExterCond,
+                             levels = c('Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+##temp$BsmtQual <- ordered(temp$BsmtQual,
+##                             levels = c('None', 'Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+##temp$BsmtCond <- ordered(temp$BsmtCond,
+##                             levels = c('None', 'Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+##temp$BsmtExposure <- ordered(temp$BsmtExposure,
+##                             levels = c('None', 'No', 'Mn', 'Av', 'Gd'))
+
+##temp$BsmtFinType1 <- ordered(temp$BsmtFinType1,
+##                             levels = c('None', 'Unf', 'LwQ', 'Rec', 'BLQ',
+##                                        'ALQ', 'GLQ'))
+
+temp$HeatingQC <- ordered(temp$HeatingQC,
+                             levels = c('Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+temp$CentralAir <- ordered(temp$CentralAir,
+                             levels = c('N', 'Y'))
+
+temp$Electrical <- ordered(temp$Electrical,
+                             levels = c('Mix', 'FuseP', 'FuseF', 'FuseA',
+                                        'SBrkr'))
+
+temp$KitchenQual <- ordered(temp$KitchenQual,
+                             levels = c('Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+temp$Functional <- ordered(temp$Functional,
+                             levels = c('Sal', 'Sev', 'Maj2', 'Maj1', 'Mod',
+                                        'Min2', 'Min1', 'Typ'))
+
+##temp$FireplaceQu <- ordered(temp$FireplaceQu,
+##                             levels = c('None', 'Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+temp$GarageType <- ordered(temp$GarageType,
+                            levels = c('None', 'Detchd', 'CarPort', 'BuiltIn',
+                                       'Basment', 'Attchd', '2Types'))
+
+##temp$GarageFinish <- ordered(temp$GarageFinish,
+##                             levels = c('None', 'Unf', 'RFn', 'Fin'))
+
+##temp$GarageQual <- ordered(temp$GarageQual,
+##                             levels = c('None', 'Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+##temp$GarageCond <- ordered(temp$GarageCond,
+##                             levels = c('None', 'Po', 'Fa', 'TA', 'Gd', 'Ex'))
+
+temp$PavedDrive <- ordered(temp$PavedDrive,
+                             levels = c('N', 'P', 'Y'))
+
+str(temp)                                                                       # final str
+
+# separate back train and test
+training <- temp[1:1451, ]
+testing <- temp[1452:2910, ]
+testing$SalePrice <- NULL
+rm(temp)
+```
+
+# Step 2: Ensemble methods
+
+## RF
+
+```{r, eval=TRUE}
+# fit
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5)
+
+start_time <- Sys.time()
+set.seed(42)
+rfFit1 <- train(SalePrice ~ ., data = training,
+                method = "rf",
+                trControl = fitControl,
+                verbose = FALSE)
+end_time <- Sys.time()
+end_time - start_time
+
+rfFit1
+
+# variable importance
+rfImp <- varImp(rfFit1)
+rfImp
+
+plot(rfImp, top = 20)
+```
+
+## GBM
+
+```{r, eval=TRUE}
+# fit
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5)
+
+start_time <- Sys.time()
+set.seed(42)
+gbmFit1 <- train(SalePrice ~ ., data = training,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE)
+end_time <- Sys.time()
+end_time - start_time
+
+gbmFit1
+
+# variable importance
+gbmImp <- varImp(gbmFit1)
+gbmImp
+
+plot(gbmImp, top = 20)
+```
+
+# Step 3: LM
+
+## EDA and pre-processing
+
+Check for multicollinearity
+
+```{r}
+# select features from rf and gbm
+names(training[, c(17, 46, 60, 38, 34, 27, 43, 53, 44, 4)])                     # all factors from feature selection
+str(training[, c(17, 46, 60, 38, 34, 27, 43, 53, 44, 4)])
+str(training[, c(46, 60, 38, 34, 43, 44, 4)])                                   # numerical factors from feature selection
+
+# check correlations                                                            
+# see source 1 for reference
+
+# get lower triangle of the correlation matrix
+  get_lower_tri<-function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+  }
+
+# get upper triangle of the correlation matrix
+  get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+  }
+
+# reorder the correlation matrix
+reorder_cormat <- function(cormat){
+
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}  
+
+# reorder the correlation matrix
+cormat = round(cor(training[c(46, 60, 38, 34, 43, 44, 4)]), 2)
+cormat <- reorder_cormat(cormat)
+upper_tri <- get_upper_tri(cormat)
+
+# melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+# create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+# print the heatmap
+print(ggheatmap)
+```
+
+Remove `X1stFlrSF` and re-check
+
+```{r}
+# reorder the correlation matrix
+reorder_cormat <- function(cormat){
+
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}  
+
+# reorder the correlation matrix
+cormat = round(cor(training[c(46, 60, 38, 34, 44, 4)]), 2)
+cormat <- reorder_cormat(cormat)
+upper_tri <- get_upper_tri(cormat)
+
+# melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+# create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+# print the heatmap
+print(ggheatmap)
+```
+
+Final features
+
+```{r}
+col_all = c(17, 46, 60, 38, 34, 27, 53, 44, 4)
+col_continuous = c(46, 38, 34, 44, 4)
+col_other = c(17, 27, 53, 60)
+```
+
+Check for outliers
+
+```{r}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch = 16
+theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.line$lwd <- 2
+trellis.par.set(theme1)
+featurePlot(x = training[, col_continuous], 
+            y = training$SalePrice, 
+            plot = "scatter", 
+            layout = c(3, 1))
+```
+
+Delete outliers and re-check
+
+```{r}
+training <- training[training$GrLivArea < 4500, ]
+```
+
+```{r}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch = 16
+theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.line$lwd <- 2
+trellis.par.set(theme1)
+featurePlot(x = training[, col_continuous], 
+            y = training$SalePrice, 
+            plot = "scatter", 
+            layout = c(3, 1))
+```
+
+Visualize categorical predictors
+
+```{r}
+par(mfrow = c(2, 2))
+boxplot(SalePrice ~ GarageCars, data = training)
+boxplot(SalePrice ~ OverallQual, data = training)
+boxplot(SalePrice ~ ExterQual, data = training)
+boxplot(SalePrice ~ KitchenQual, data = training)
+```
+
+Check normality and perform transformations
+
+```{r}
+# SalePrice
+par(mfrow = c(1, 2))
+hist(training$SalePrice)
+qqnorm(training$SalePrice, pch = 1, frame = FALSE)
+qqline(training$SalePrice, col = "steelblue", lwd = 2)
+
+training$SalePrice <- sqrt(training$SalePrice)
+
+par(mfrow = c(1, 2))
+hist(training$SalePrice)
+qqnorm(training$SalePrice, pch = 1, frame = FALSE)
+qqline(training$SalePrice, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# GrLivArea
+par(mfrow = c(1, 2))
+hist(training$GrLivArea)
+qqnorm(training$GrLivArea, pch = 1, frame = FALSE)
+qqline(training$GrLivArea, col = "steelblue", lwd = 2)
+
+training$GrLivArea <- sqrt(training$GrLivArea)
+
+par(mfrow = c(1, 2))
+hist(training$GrLivArea)
+qqnorm(training$GrLivArea, pch = 1, frame = FALSE)
+qqline(training$GrLivArea, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# TotalBsmtSF
+par(mfrow = c(1, 2))
+hist(training$TotalBsmtSF)
+qqnorm(training$TotalBsmtSF, pch = 1, frame = FALSE)
+qqline(training$TotalBsmtSF, col = "steelblue", lwd = 2)
+
+training$TotalBsmtSF <- sqrt(training$TotalBsmtSF)
+
+par(mfrow = c(1, 2))
+hist(training$TotalBsmtSF)
+qqnorm(training$TotalBsmtSF, pch = 1, frame = FALSE)
+qqline(training$TotalBsmtSF, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# BsmtFinSF1
+par(mfrow = c(1, 2))
+hist(training$BsmtFinSF1)
+qqnorm(training$BsmtFinSF1, pch = 1, frame = FALSE)
+qqline(training$BsmtFinSF1, col = "steelblue", lwd = 2)
+
+training$BsmtFinSF1 <- sqrt(training$BsmtFinSF1)
+
+par(mfrow = c(1, 2))
+hist(training$BsmtFinSF1)
+qqnorm(training$BsmtFinSF1, pch = 1, frame = FALSE)
+qqline(training$BsmtFinSF1, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# X2ndFlrSF
+par(mfrow = c(1, 2))
+hist(training$X2ndFlrSF)
+qqnorm(training$X2ndFlrSF, pch = 1, frame = FALSE)
+qqline(training$X2ndFlrSF, col = "steelblue", lwd = 2)
+
+training$X2ndFlrSF <- sqrt(training$X2ndFlrSF)
+
+par(mfrow = c(1, 2))
+hist(training$X2ndFlrSF)
+qqnorm(training$X2ndFlrSF, pch = 1, frame = FALSE)
+qqline(training$X2ndFlrSF, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# LotArea
+par(mfrow = c(1, 2))
+hist(training$LotArea)
+qqnorm(training$LotArea, pch = 1, frame = FALSE)
+qqline(training$LotArea, col = "steelblue", lwd = 2)
+
+training$LotArea <- sqrt(training$LotArea)
+
+par(mfrow = c(1, 2))
+hist(training$LotArea)
+qqnorm(training$LotArea, pch = 1, frame = FALSE)
+qqline(training$LotArea, col = "steelblue", lwd = 2)
+```
+
+## Fit models
+
+Assumptions:
+
+* Linearity (Normal Q-Q plot looks good)
+* No autocorrelation (NA)
+* Homoscadacisity  (no patterns in Residuals vs. Fitted)
+* No outliers (none in Residuals vs. Fitted)
+* No influential points (low Cook's Distance)
+
+```{r}
+# fit
+lmFit1 <- lm(SalePrice ~ OverallQual +
+                         GrLivArea +
+                         GarageCars +
+                         TotalBsmtSF +
+                         BsmtFinSF1 +
+                         ExterQual +
+                         KitchenQual +
+                         X2ndFlrSF +
+                         LotArea,
+                         data = training)
+
+par(mfrow = c(2,2))
+plot(lmFit1, which = c(1:4))
+```
+
+No multicollinearity of numerical predictors
+
+```{r}
+# fit
+lmFit2 <- lm(SalePrice ~ GrLivArea +
+                         GarageCars +
+                         TotalBsmtSF +
+                         BsmtFinSF1 +
+                         X2ndFlrSF +
+                         LotArea,
+                         data = training)
+
+vif(lmFit2)
+```
+
+Compare with interaction model
+
+```{r}
+# fit
+lmFit3 <- lm(SalePrice ~ OverallQual *
+                         GrLivArea +
+                         GarageCars +
+                         TotalBsmtSF +
+                         BsmtFinSF1 +
+                         ExterQual +
+                         KitchenQual +
+                         X2ndFlrSF +
+                         LotArea,
+                         data = training)
+
+par(mfrow = c(2,2))
+plot(lmFit3, which = c(1:4))
+```
+
+Remove influential point and re-fit
+
+```{r}
+training <- training[-637, ]
+```
+
+```{r}
+# fit
+lmFit4 <- lm(SalePrice ~ OverallQual *
+                         GrLivArea +
+                         GarageCars +
+                         TotalBsmtSF +
+                         BsmtFinSF1 +
+                         ExterQual +
+                         KitchenQual +
+                         X2ndFlrSF +
+                         LotArea,
+                         data = training)
+
+par(mfrow = c(2,2))
+plot(lmFit4, which = c(1:4))
+```
+
+Re-fit lmFit1 without influential point
+
+```{r}
+# fit
+lmFit5 <- lm(SalePrice ~ OverallQual +
+                         GrLivArea +
+                         GarageCars +
+                         TotalBsmtSF +
+                         BsmtFinSF1 +
+                         ExterQual +
+                         KitchenQual +
+                         X2ndFlrSF +
+                         LotArea,
+                         data = training)
+
+par(mfrow = c(2,2))
+plot(lmFit5, which = c(1:4))
+```
+
+The model with the interaction term (lmFit4) is the better model
+
+```{r}
+anova(lmFit5, lmFit4)
+```
+
+Train with caret
+
+```{r}
+# fit
+##fitControl <- trainControl(method = "repeatedcv",
+##                           number = 5,
+##                           repeats = 5)
+
+start_time <- Sys.time()
+set.seed(42)
+lmFit6 <- train(SalePrice ~ OverallQual *
+                            GrLivArea +
+                            GarageCars +
+                            TotalBsmtSF +
+                            BsmtFinSF1 +
+                            ExterQual +
+                            KitchenQual +
+                            X2ndFlrSF +
+                            LotArea,
+                            data = training,
+                            method = "lm",
+                            trControl = fitControl,
+                            verbose = FALSE)
+end_time <- Sys.time()
+end_time - start_time
+
+lmFit6
+```
+
+# Step 4: Testing
+
+|     | RMSE     | Rsquared  | MAE      |
+|-----|----------|-----------|----------|
+| RF  | 29256.82 | 0.8677282 | 17351.59 |
+| GBM | 28553.05 | 0.8720533 | 16923.64 |
+| LM  | 71.75269 | 0.7058348 | 24.21299 |
+
+```{r}
+# predict from best model
+gbmPreds1 <- predict(gbmFit1, newdata = testing)
+```
+
+```{r}
+# write to csv
+temp <- read.csv('test.csv')
+id <- temp$Id
+rm(temp)
+
+lmw_submission <- data.frame(Id = id, SalePrice = gbmPreds1)
+write.csv(lmw_submission, file = 'lmw_submission.csv', row.names = FALSE)
+```
+
+# References
+ggplot2: Quick correlation matrix heatmap - R software and data visualization - Easy Guides - Wiki - STHDA. Sthda.com. Published 2020. Accessed March 30, 2021. http://www.sthda.com/english/wiki/ggplot2-quick-correlation-matrix-heatmap-r-software-and-data-visualization
